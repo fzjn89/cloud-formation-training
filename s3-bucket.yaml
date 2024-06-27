@@ -7,4 +7,4 @@ Resources:
  S3Bucket:
   Type: 'AWS::S3::Bucket'
   Properties: 
-   BucketName: 'FJ89-S3-Bucket_Yaml'
+   BucketName: 'fj89-s3-bucket-yaml'
