@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation for VPC'
+
+Resources: 
+# My VPC(name of the VPC created)
+  MyVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '172.16.0.0/16'
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: MyVPC
+
+# Public subnet in 1st AZ for MyVPC 
+  PublicSubnet1AZ:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '172.16.1.0/24'
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet1AZ
+
+# App private subnet in 1st AZ for MyVPC
+  AppPrivateSubnet1AZ:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '172.16.2.0/24'
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: AppPrivateSubnet1AZ
+
+# Database private subnet in 1st AZ for MyVPC
+  DataPrivateSubnet1AZ:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '172.16.3.0/24'
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: DataPrivateSubnet1AZ 
+         
+# Public subnet in 2nd AZ for MyVPC
+  PublicSubnet2AZ:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '172.16.4.0/24'
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet2AZ
+
+# App private subnet in 2nd AZ for MyVPC
+  AppPrivateSubnet2AZ:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '172.16.5.0/24'
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: AppPrivateSubnet2AZ
+
+ # Database private subnet in 2nd AZ for MyVPC
+  DataPrivateSubnet2AZ:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: '172.16.6.0/24'
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: DataPrivateSubnet2AZ    
+
+ # Internet Gateway IGW  
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway' 
+    Properties:
+      Tags:
+        - Key: Name
+          Value: MyVPC-IGW       
+
+# Attach Gateway
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway  
+
+# Route Table
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+      - Key: Name
+        Value: PublicRouteTable
+
+# Public Route
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+# Public Subnet Association
+  PublicSubnet1AZRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet1AZ
+      RouteTableId: !Ref PublicRouteTable
+
+# Web server and ALB Security Group
+  WebServerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Enable HTTP access'
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0' 
+
+# Launch Config
+  MyLaunchConfiguration:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties: 
+      ImageId: 'ami-06d753822bd94c64e'
+      InstanceType: 't2.micro'
+      SecurityGroups:  
+        - !Ref WebServerSecurityGroup    
+      UserData: 
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
+          echo "Hello from Auto Scaling Instance" > /var/www/html/index.html
+
+# ASG
+  MyAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties: 
+      LaunchConfigurationName: !Ref MyLaunchConfiguration
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1AZ
+        - !Ref PublicSubnet2AZ
+
+# Alarm
+  HighCPUAlarm: 
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties: 
+      AlarmDescription: 'Alarm when CPU exceeds 70%'
+      MetricName: 'CPUUtilization'
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '70'
+      AlarmActions: 
+        - !Ref ScaleOutPolicy 
+      Dimensions: 
+        - Name: AutoScalingGroupName
+          Value: !Ref MyAutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold   
+     
+
+# Scale Out Policy
+  ScaleOutPolicy: 
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties: 
+      AutoScalingGroupName: !Ref MyAutoScalingGroup
+      PolicyType: SimpleScaling 
+      ScalingAdjustment: '1' # Will increase the instances by 1 whenever policy triggered
+      Cooldown: '300' # once a scale has been done it will wait for another 5 Mins before considering to trigger another scaling '
+      AdjustmentType: ChangeInCapacity        
+
+
